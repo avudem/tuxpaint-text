@@ -1,4 +1,0 @@
-                        Tux Paint "Magic" Tool: Cartoon
-
-   This makes the picture look like a cartoon -- with thick outlines and
-   bright, solid colors -- wherever you move the mouse.

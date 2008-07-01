@@ -1,4 +1,0 @@
-                         Tux Paint "Magic" Tool: Chalk
-
-   This makes parts of the picture (where you move the mouse) look like a
-   chalk drawing.
