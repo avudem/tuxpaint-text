@@ -23,7 +23,7 @@
   (See COPYING.txt)
   
   June 14, 2002 - May 28, 2008
-  $Id: tuxpaint.c,v 1.645 2008/06/30 22:15:27 mfuhrer Exp $
+  $Id: tuxpaint.c,v 1.643 2008/06/02 00:49:01 albert Exp $
 */
 
 
@@ -92,6 +92,13 @@
 #define COLORSEL_REFRESH 4	// redraw the colors, either on or off
 #define COLORSEL_CLOBBER_WIPE 8 // draw the (greyed out) colors, but don't disable
 #define COLORSEL_FORCE_REDRAW 16 // enable, and force redraw (to make color picker work)
+
+/* Setting the amask value based on endianness*/
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+TPAINT_AMASK = 0xff000000;
+#else
+TPAINT_AMASK = 0x000000ff;
+#endif
 
 static unsigned draw_colors(unsigned action);
 
@@ -206,13 +213,8 @@ char *strcasestr(const char *haystack, const char *needle)
 #undef y1
 
 #include <locale.h>
-
-#ifdef __BEOS__
-#include <wchar.h>
-#else
 #include <wchar.h>
 #include <wctype.h>
-#endif
 
 #include <libintl.h>
 #ifndef gettext_noop
@@ -328,25 +330,6 @@ extern WrapperData macosx;
 
 
 #ifndef NO_SDLPANGO
-
-/*
- The following section renames global variables defined in SDL_Pango.h to avoid errors during linking.
- It is okay to rename these variables because they are constants.
- SDL_Pango.h is included by tuxpaint.c.  
- */
-#define _MATRIX_WHITE_BACK _MATRIX_WHITE_BACK0
-#define MATRIX_WHITE_BACK MATRIX_WHITE_BACK0
-#define _MATRIX_BLACK_BACK _MATRIX_BLACK_BACK0
-#define MATRIX_BLACK_BACK MATRIX_BLACK_BACK0
-#define _MATRIX_TRANSPARENT_BACK_BLACK_LETTER _MATRIX_TRANSPARENT_BACK_BLACK_LETTER0
-#define MATRIX_TRANSPARENT_BACK_BLACK_LETTER MATRIX_TRANSPARENT_BACK_BLACK_LETTER0
-#define _MATRIX_TRANSPARENT_BACK_WHITE_LETTER _MATRIX_TRANSPARENT_BACK_WHITE_LETTER0
-#define MATRIX_TRANSPARENT_BACK_WHITE_LETTER MATRIX_TRANSPARENT_BACK_WHITE_LETTER0
-#define _MATRIX_TRANSPARENT_BACK_TRANSPARENT_LETTER _MATRIX_TRANSPARENT_BACK_TRANSPARENT_LETTER0
-#define MATRIX_TRANSPARENT_BACK_TRANSPARENT_LETTER MATRIX_TRANSPARENT_BACK_TRANSPARENT_LETTER0
-/*
- The renaming ends here.
- */
 
 #include "SDL_Pango.h"
 #if !defined(SDL_PANGO_H)
@@ -500,6 +483,13 @@ enum
   STARTER_SCENE
 };
 
+enum
+{
+  LABEL_OFF,
+  LABEL_LABEL,
+  LABEL_SELECT
+};
+
 /* Color globals (copied from colors.h, if no colors specified by user) */
 
 int NUM_COLORS;
@@ -557,6 +547,7 @@ static SDL_Rect r_ttools;	// was 96x40 @ 0,0  (title for tools, "Tools")
 static SDL_Rect r_tcolors;	// was 96x48 @ 0,376 (title for colors, "Colors")
 static SDL_Rect r_ttoolopt;	// was 96x40 @ 544,0 (title for tool options)
 static SDL_Rect r_tuxarea;	// was 640x56
+static SDL_Rect r_label;
 
 static int button_w;		// was 48
 static int button_h;		// was 48
@@ -628,6 +619,7 @@ static void setup_normal_screen_layout(void)
   r_canvas.y = 0;
   r_canvas.w = WINDOW_WIDTH - (gd_tools.cols + gd_toolopt.cols) * button_w;
 
+
   r_tuxarea.x = 0;
   r_tuxarea.w = WINDOW_WIDTH;
 
@@ -637,6 +629,8 @@ static void setup_normal_screen_layout(void)
   gd_toolopt.rows = buttons_tall;
 
   r_canvas.h = r_ttoolopt.h + buttons_tall * button_h;
+
+  r_label = r_canvas;
 
   r_colors.y = r_canvas.h + r_canvas.y;
   r_tcolors.y = r_canvas.h + r_canvas.y;
@@ -714,6 +708,7 @@ static void setup_screen_layout(void)
 
 static SDL_Surface *screen;
 static SDL_Surface *canvas;
+static SDL_Surface *label;
 static SDL_Surface *img_starter, *img_starter_bkgd;
 
 /* Update a rect. based on two x/y coords (not necessarly in order): */
@@ -821,6 +816,10 @@ static int grid_hit_gd(const SDL_Rect * const r, unsigned x, unsigned y,
 // test an SDL_Rect r for a grid location, based on a grid_dims gd
 #define GRIDHIT_GD(r,gd) grid_hit_gd(&(r), event.button.x, event.button.y, &(gd))
 
+/* One global variable defined here so that update_canas() need not be moved below */
+
+static int disable_label;
+
 /* Update the screen with the new canvas: */
 static void update_canvas(int x1, int y1, int x2, int y2)
 {
@@ -845,6 +844,13 @@ static void update_canvas(int x1, int y1, int x2, int y2)
   }
 
   SDL_BlitSurface(canvas, NULL, screen, &r_canvas);
+
+  /* If label is not disabled, cover canvas with label layer */
+
+  if(!disable_label)
+    SDL_BlitSurface(label, NULL, screen, &r_label);
+
+
   update_screen(x1 + 96, y1, x2 + 96, y2);
 }
 
@@ -984,6 +990,7 @@ static SDL_Surface *img_scroll_up, *img_scroll_down;
 static SDL_Surface *img_scroll_up_off, *img_scroll_down_off;
 static SDL_Surface *img_grow, *img_shrink;
 static SDL_Surface *img_bold, *img_italic;
+static SDL_Surface *img_label, *img_select;
 static SDL_Surface *img_color_picker, *img_color_picker_thumb, *img_paintwell;
 int color_picker_x, color_picker_y;
 
@@ -1167,7 +1174,7 @@ static SDL_Surface *render_text_w(TuxPaint_Font * restrict font,
 
 
     SDLPango_SetText(font->pango_context, utfstr, -1);
-    ret = SDLPango_CreateSurfaceDraw(font->pango_context); 
+    ret = SDLPango_CreateSurfaceDraw(font->pango_context);
   }
 #endif
 
@@ -1313,6 +1320,7 @@ static int cur_tool, cur_brush;
 static int cur_stamp[MAX_STAMP_GROUPS];
 static int cur_shape, cur_magic;
 static int cur_font, cur_eraser;
+static int cur_label;
 static int cursor_left, cursor_x, cursor_y, cursor_textwidth;	// canvas-relative
 static int been_saved;
 static char file_id[32];
@@ -1756,6 +1764,7 @@ int main(int argc, char *argv[])
   cur_magic = 0;
   cur_font = 0;
   cur_eraser = 0;
+  cur_label = 0;
   cursor_left = -1;
   cursor_x = -1;
   cursor_y = -1;
@@ -2153,7 +2162,7 @@ static void mainloop(void)
       print_image(); 
       draw_toolbar();
       draw_tux_text(TUX_BORED, "", 0);
-      update_screen_rect(&r_tools);        
+      update_screen_rect(&r_tools);
     }
 	else
 	{
@@ -2255,7 +2264,7 @@ static void mainloop(void)
             if (use_sound)
               speak_string(texttool_str);
 #endif
-#endif              
+#endif
 		im_softreset(&im_data);
 	      }
 	      else if (iswprint(*im_cp))
@@ -2674,10 +2683,18 @@ static void mainloop(void)
 	    }
 	    else if (cur_tool == TOOL_TEXT)
 	    {
-	      if (!disable_stamp_controls)
-		gd_controls = (grid_dims)
-	      {
-	      2, 2};
+           if(!disable_label)
+           {
+	       if (!disable_stamp_controls)
+		    gd_controls = (grid_dims) { 3 , 2 };
+            else
+              gd_controls = (grid_dims) { 1 , 2};
+           }
+           else
+            {
+              if (!disable_stamp_controls)
+		      gd_controls = (grid_dims) { 2 , 2 };
+            }
 	    }
 
 	    // number of whole or partial rows that will be needed
@@ -2849,63 +2866,159 @@ static void mainloop(void)
 	      {
 		/* Text controls! */
 		int control_sound = -1;
-		if (which & 2)
-		{
-		  /* One of the bottom buttons: */
-		  if (which & 1)
+          if(!disable_label)
+          {
+            if (which & 4)
 		  {
-		    /* Bottom right button: Grow: */
-		    if (text_size < MAX_TEXT_SIZE)
+		    /* One of the bottom buttons: */
+		    if (which & 1)
 		    {
-		      text_size++;
-		      control_sound = SND_GROW;
-		      toolopt_changed = 1;
+		      /* Bottom right button: Grow: */
+		      if (text_size < MAX_TEXT_SIZE)
+		      {
+		        text_size++;
+		        control_sound = SND_GROW;
+		        toolopt_changed = 1;
+		      }
+		    }
+		    else
+		    {
+		      /* Bottom left button: Shrink: */
+		      if (text_size > MIN_TEXT_SIZE)
+		      {
+		        text_size--;
+		        control_sound = SND_SHRINK;
+		        toolopt_changed = 1;
+		      }
+		    }
+            }
+		  else
+		  {
+		    if (which & 2)
+		    {
+                /* One of the middle buttons: */
+                if ( which & 1)
+                {
+                  /*  right button: Italic: */
+                  if (text_state & TTF_STYLE_ITALIC)
+	             {
+	               text_state &= ~TTF_STYLE_ITALIC;
+                    control_sound = SND_ITALIC_ON;
+                  }
+                  else
+                  {
+	               text_state |= TTF_STYLE_ITALIC;
+	               control_sound = SND_ITALIC_OFF;
+                  }
+                }
+                else
+		      {
+		        /* middle left button: Bold: */
+		        if (text_state & TTF_STYLE_BOLD)
+		        {
+		          text_state &= ~TTF_STYLE_BOLD;
+		          control_sound = SND_THIN;
+		        }
+		        else
+		        {
+		          text_state |= TTF_STYLE_BOLD;
+		          control_sound = SND_THICK;
+                  }
+		      }
+                toolopt_changed = 1;
+              }
+              else
+              {
+                /* One of the top buttons: */
+                if (which & 1)
+                {
+                  /* Select button: */
+                  if (cur_label == LABEL_SELECT)
+                  {
+                    cur_label = LABEL_OFF;
+                  }
+                  else
+                  {
+                    cur_label = LABEL_SELECT;
+                  }
+                }
+                else
+                {
+                  /* Label button: */
+                  if (cur_label == LABEL_LABEL)
+                  {
+                    cur_label = LABEL_OFF;
+                  }
+                  else
+                  {
+                    cur_label = LABEL_LABEL;
+                  }
+                }
+                toolopt_changed = 1;
+              }
+            }
+          }
+          else
+          {
+            if (which & 2)
+		  {
+		    /* One of the bottom buttons: */
+		    if (which & 1)
+		    {
+		      /* Bottom right button: Grow: */
+		      if (text_size < MAX_TEXT_SIZE)
+		      {
+		        text_size++;
+		        control_sound = SND_GROW;
+		        toolopt_changed = 1;
+		      }
+		    }
+		    else
+		    {
+		      /* Bottom left button: Shrink: */
+		      if (text_size > MIN_TEXT_SIZE)
+		      {
+		        text_size--;
+		        control_sound = SND_SHRINK;
+		        toolopt_changed = 1;
+		      }
 		    }
 		  }
 		  else
 		  {
-		    /* Bottom left button: Shrink: */
-		    if (text_size > MIN_TEXT_SIZE)
+		    /* One of the top buttons: */
+		    if (which & 1)
 		    {
-		      text_size--;
-		      control_sound = SND_SHRINK;
-		      toolopt_changed = 1;
-		    }
-		  }
-		}
-		else
-		{
-		  /* One of the top buttons: */
-		  if (which & 1)
-		  {
-		    /* Top right button: Italic: */
-		    if (text_state & TTF_STYLE_ITALIC)
-		    {
-		      text_state &= ~TTF_STYLE_ITALIC;
-		      control_sound = SND_ITALIC_ON;
+		      /*  right button: Italic: */
+		      if (text_state & TTF_STYLE_ITALIC)
+		      {
+		        text_state &= ~TTF_STYLE_ITALIC;
+		        control_sound = SND_ITALIC_ON;
+		      }
+		      else
+		      {
+		        text_state |= TTF_STYLE_ITALIC;
+		        control_sound = SND_ITALIC_OFF;
+		      }
 		    }
 		    else
 		    {
-		      text_state |= TTF_STYLE_ITALIC;
-		      control_sound = SND_ITALIC_OFF;
+		      /* Top left button: Bold: */
+		      if (text_state & TTF_STYLE_BOLD)
+		      {
+		        text_state &= ~TTF_STYLE_BOLD;
+		        control_sound = SND_THIN;
+		      }
+		      else
+		      {
+		        text_state |= TTF_STYLE_BOLD;
+		        control_sound = SND_THICK;
+		      }
 		    }
+		    toolopt_changed = 1;
 		  }
-		  else
-		  {
-		    /* Top left button: Bold: */
-		    if (text_state & TTF_STYLE_BOLD)
-		    {
-		      text_state &= ~TTF_STYLE_BOLD;
-		      control_sound = SND_THIN;
-		    }
-		    else
-		    {
-		      text_state |= TTF_STYLE_BOLD;
-		      control_sound = SND_THICK;
-		    }
-		  }
-		  toolopt_changed = 1;
-		}
+
+          }
 
 
 		if (control_sound != -1)
@@ -3027,7 +3140,10 @@ static void mainloop(void)
 
 	      // Only rerender when picking a different font
 	      if (toolopt_changed)
-		do_render_cur_text(0);
+           {
+              draw_fonts();
+              do_render_cur_text(0);
+           }
 	    }
 	    else if (cur_tool == TOOL_STAMP)
 	    {
@@ -3421,13 +3537,21 @@ static void mainloop(void)
             {
             1, 2};  // was left 0,0 before adding left/right stamp group buttons -bjk 2007.05.03
           }
-	  else if (cur_tool == TOOL_TEXT)
-	  {
-	    if (!disable_stamp_controls)
-	      gd_controls = (grid_dims)
-	    {
-	    2, 2};
-	  }
+	     else if (cur_tool == TOOL_TEXT)
+	     {
+            if(!disable_label)
+            {
+	         if (!disable_stamp_controls)
+		      gd_controls = (grid_dims) { 3 , 2 };
+              else
+                gd_controls = (grid_dims) { 1 , 2};
+            }
+            else
+            {
+              if (!disable_stamp_controls)
+		      gd_controls = (grid_dims) { 2 , 2 };
+            }
+	     }
 
 	  // number of whole or partial rows that will be needed
 	  // (can make this per-tool if variable columns needed)
@@ -3751,8 +3875,18 @@ static void mainloop(void)
 	  max = 14;
 	  if (cur_tool == TOOL_STAMP && !disable_stamp_controls)
 	    max = 8; // was 10 before left/right group buttons -bjk 2007.05.03
-	  if (cur_tool == TOOL_TEXT && !disable_stamp_controls)
-	    max = 10;
+       if(!disable_label)
+       {
+          if (cur_tool == TOOL_TEXT)
+            max = 12;
+          if (cur_tool == TOOL_TEXT && !disable_stamp_controls)
+	       		max = 8;
+       }
+       else
+       {
+          if (cur_tool == TOOL_TEXT && !disable_stamp_controls)
+	       		max = 10;
+       }
 
 
 	  if (num_things > max + TOOLOFFSET)
@@ -3823,8 +3957,10 @@ static void mainloop(void)
 	    else
 	      do_setcursor(cursor_rotate);
 	  }
-	  else if (cur_tool == TOOL_TEXT)
+	  else if (cur_tool == TOOL_TEXT &&  cur_label != LABEL_SELECT)
 	    do_setcursor(cursor_insertion);
+    else if (cur_tool == TOOL_TEXT && cur_label == LABEL_SELECT)
+         do_setcursor(cursor_arrow);
 	  else if (cur_tool == TOOL_MAGIC)
 	    do_setcursor(cursor_wand);
 	  else if (cur_tool == TOOL_ERASER)
@@ -4022,17 +4158,20 @@ static void mainloop(void)
       }
     }
 
-
-    SDL_Delay(10);
-
-    cur_cursor_blink = SDL_GetTicks();
-
-
-    if (cur_tool == TOOL_TEXT && cursor_x != -1 && cursor_y != -1 &&
-	cur_cursor_blink > last_cursor_blink + CURSOR_BLINK_SPEED)
+    if(cur_label != LABEL_SELECT)
     {
-      last_cursor_blink = SDL_GetTicks();
-      draw_blinking_cursor();
+      SDL_Delay(10);
+
+      cur_cursor_blink = SDL_GetTicks();
+
+
+      if (cur_tool == TOOL_TEXT && cursor_x != -1 && cursor_y != -1 &&
+	 cur_cursor_blink > last_cursor_blink + CURSOR_BLINK_SPEED)
+      {
+        last_cursor_blink = SDL_GetTicks();
+        draw_blinking_cursor();
+
+      }
     }
   }
   while (!done);
@@ -6135,6 +6274,7 @@ static void setup(int argc, char *argv[])
   no_system_fonts = 1;
   mirrorstamps = 0;
   disable_stamp_controls = 0;
+  disable_label = 0;
 
 #ifndef WINDOW_WIDTH
   WINDOW_WIDTH = 800;
@@ -6325,6 +6465,14 @@ static void setup(int argc, char *argv[])
     else if (strcmp(argv[i], "--stampcontrols") == 0)
     {
       disable_stamp_controls = 0;
+    }
+    else if (strcmp(argv[i], "--nolabel") == 0)
+    {
+      disable_label = 1;
+    }
+    else if (strcmp(argv[i], "--label") == 0)
+    {
+      disable_label = 1;
     }
     else if (strcmp(argv[i], "--noshortcuts") == 0)
     {
@@ -7398,6 +7546,18 @@ static void setup(int argc, char *argv[])
 
   SDL_FillRect(canvas, NULL, SDL_MapRGB(canvas->format, 255, 255, 255));
 
+  /* Creating the label surface: */
+
+  label = SDL_CreateRGBSurface(screen->flags,
+				WINDOW_WIDTH - (96 * 2),
+				(48 * 7) + 40 + HEIGHTOFFSET,
+				screen->format->BitsPerPixel,
+				screen->format->Rmask,
+				screen->format->Gmask,
+				screen->format->Bmask, TPAINT_AMASK);
+
+	/* making the label layer transparent */
+  SDL_FillRect(label, NULL, SDL_MapRGBA(label->format, 0, 0, 0, 0));
 
   /* Create undo buffer space: */
 
@@ -7500,6 +7660,9 @@ static void setup(int argc, char *argv[])
 
   img_bold = loadimage(DATA_PREFIX "images/ui/bold.png");
   img_italic = loadimage(DATA_PREFIX "images/ui/italic.png");
+
+  img_label = loadimage(DATA_PREFIX "images/ui/label.png");
+  img_select = loadimage(DATA_PREFIX "images/ui/select.png");
 
   show_progress_bar(screen);
 
@@ -8382,9 +8545,18 @@ static void draw_fonts(void)
 
   /* How many can we show? */
 
-  most = 10;
-  if (disable_stamp_controls)
-    most = 14;
+  if(!disable_label)
+  {
+    most = 8;
+      if (disable_stamp_controls)
+        most = 12;
+  }
+  else
+  {
+    most = 10;
+      if (disable_stamp_controls)
+        most = 14;
+  }
 
 #ifdef DEBUG
   printf("there are %d font families\n", num_font_families);
@@ -8411,7 +8583,10 @@ static void draw_fonts(void)
     }
 
     dest.x = WINDOW_WIDTH - 96;
-    dest.y = 40 + 24 + ((6 + TOOLOFFSET / 2) * 48);
+    if (!disable_label)
+      dest.y = 40 + 24 + ((5 + TOOLOFFSET / 2) * 48);
+    else
+      dest.y = 40 + 24 + ((6 + TOOLOFFSET / 2) * 48);
 
     if (!disable_stamp_controls)
       dest.y = dest.y - (48 * 2);
@@ -8514,6 +8689,35 @@ static void draw_fonts(void)
     SDL_Surface *button_color;
     SDL_Surface *button_body;
 
+    if (!disable_label)
+    {
+      dest.x = WINDOW_WIDTH - 96;
+      dest.y = 40 + ((4 + TOOLOFFSET / 2) * 48);
+
+      if(cur_label == LABEL_LABEL)
+        SDL_BlitSurface(img_btn_down, NULL, screen, &dest);
+      else
+        SDL_BlitSurface(img_btn_up, NULL, screen, &dest);
+
+      dest.x = WINDOW_WIDTH - 96 + (48 - img_label->w) / 2;
+      dest.y = (40 + ((4 + TOOLOFFSET / 2) * 48) + (48 - img_label->h) / 2);
+
+      SDL_BlitSurface(img_label, NULL, screen, &dest);
+
+      dest.x = WINDOW_WIDTH - 48;
+      dest.y = 40 + ((4 + TOOLOFFSET / 2) * 48);
+
+      if(cur_label == LABEL_SELECT)
+        SDL_BlitSurface(img_btn_down, NULL, screen, &dest);
+      else
+        SDL_BlitSurface(img_btn_up, NULL, screen, &dest);
+
+      dest.x = WINDOW_WIDTH - 48 + (48 - img_select->w) / 2;
+      dest.y = (40 + ((4 + TOOLOFFSET / 2) * 48) + (48 - img_select->h) / 2);
+
+      SDL_BlitSurface(img_select, NULL, screen, &dest);
+    }
+
     /* Show bold button: */
 
     dest.x = WINDOW_WIDTH - 96;
@@ -8592,6 +8796,31 @@ static void draw_fonts(void)
 
     SDL_BlitSurface(button_color, NULL, img_grow, NULL);
     SDL_BlitSurface(img_grow, NULL, screen, &dest);
+  }
+  else
+  {
+    if (!disable_label)
+    {
+      dest.x = WINDOW_WIDTH - 96;
+      dest.y = 40 + ((6 + TOOLOFFSET / 2) * 48);
+
+      SDL_BlitSurface(img_btn_up, NULL, screen, &dest);
+
+      dest.x = WINDOW_WIDTH - 96 + (48 - img_label->w) / 2;
+      dest.y = (40 + ((6 + TOOLOFFSET / 2) * 48) + (48 - img_label->h) / 2);
+
+      SDL_BlitSurface(img_label, NULL, screen, &dest);
+
+      dest.x = WINDOW_WIDTH - 48;
+      dest.y = 40 + ((6 + TOOLOFFSET / 2) * 48);
+
+      SDL_BlitSurface(img_btn_up, NULL, screen, &dest);
+
+      dest.x = WINDOW_WIDTH - 48 + (48 - img_select->w) / 2;
+      dest.y = (40 + ((6 + TOOLOFFSET / 2) * 48) + (48 - img_select->h) / 2);
+
+      SDL_BlitSurface(img_select, NULL, screen, &dest);
+    }
   }
 }
 
@@ -15201,9 +15430,10 @@ static void do_render_cur_text(int do_blit)
     color_hexes[cur_color][2],
     0
   };
-  SDL_Surface *tmp_surf;
+  SDL_Surface *tmp_surf, *tmp_label;
   SDL_Rect dest, src;
   wchar_t *str;
+  Uint32 colorkey;
 
   hide_blinking_cursor();
 
@@ -15229,8 +15459,6 @@ static void do_render_cur_text(int do_blit)
     h = tmp_surf->h;
 
     cursor_textwidth = w;
-
-    free(str);
   }
   else
   {
@@ -15239,6 +15467,20 @@ static void do_render_cur_text(int do_blit)
     update_canvas(0, 0, WINDOW_WIDTH - 96, (48 * 7) + 40 + HEIGHTOFFSET);
     cursor_textwidth = 0;
     return;
+  }
+  tmp_label = SDL_CreateRGBSurface(tmp_surf->flags,
+                                    tmp_surf->w, tmp_surf->h, 
+                                    tmp_surf->format->BitsPerPixel,
+                                    tmp_surf->format->Rmask, tmp_surf->format->Gmask, tmp_surf->format->Bmask, 0);
+
+  if((color_hexes[cur_color][0] +
+       color_hexes[cur_color][1] + color_hexes[cur_color][2]) == 765)
+  {
+    SDL_FillRect(tmp_label, NULL, SDL_MapRGB(tmp_label->format, 0, 0, 0));
+  }
+  else
+  {
+    SDL_FillRect(tmp_label, NULL, SDL_MapRGB(tmp_label->format, 255, 255, 255));
   }
 
 
@@ -15261,7 +15503,7 @@ static void do_render_cur_text(int do_blit)
     if (dest.y + dest.h > (48 * 7 + 40 + HEIGHTOFFSET))
       dest.h = (48 * 7 + 40 + HEIGHTOFFSET) - dest.y;
 
-    SDL_FillRect(screen, &dest, SDL_MapRGB(canvas->format, 0, 0, 0));
+    SDL_FillRect(screen, &dest, SDL_MapRGB(canvas->format, 255, 255, 255));
 
 
     /* FIXME: This would be nice if it were alpha-blended: */
@@ -15311,7 +15553,25 @@ static void do_render_cur_text(int do_blit)
 
     if (do_blit)
     {
-      SDL_BlitSurface(tmp_surf, &src, canvas, &dest);
+      if(cur_label == LABEL_LABEL)
+      {
+        SDL_BlitSurface(tmp_surf, &src, tmp_label, &src);
+        if((color_hexes[cur_color][0] +
+             color_hexes[cur_color][1] + color_hexes[cur_color][2]) == 765)
+        {
+          colorkey = SDL_MapRGB(tmp_label->format, 0, 0, 0);
+        }
+        else
+        {
+          colorkey = SDL_MapRGB(tmp_label->format, 255, 255, 255);
+        }
+        SDL_SetColorKey(tmp_label, SDL_SRCCOLORKEY, colorkey);
+        SDL_BlitSurface(tmp_label, &src, label, &dest);
+      }
+      else
+      {
+        SDL_BlitSurface(tmp_surf, &src, canvas, &dest);
+      }
       update_canvas(dest.x, dest.y, dest.x + tmp_surf->w,
 		    dest.y + tmp_surf->h);
     }
@@ -15327,9 +15587,12 @@ static void do_render_cur_text(int do_blit)
 
   SDL_Flip(screen);
 
+  free(str);
 
   if (tmp_surf != NULL)
     SDL_FreeSurface(tmp_surf);
+  if (tmp_label != NULL)
+    SDL_FreeSurface(tmp_label);
 }
 
 
