@@ -47,7 +47,6 @@
 # define VIDEO_BPP 32		// might be fastest, if conversion funcs removed
 #endif
 
-
 //#define CORNER_SHAPES     /* need major work! */
 
 
@@ -95,9 +94,9 @@
 
 /* Setting the amask value based on endianness*/
 #if SDL_BYTEORDER == SDL_BIG_ENDIAN
-TPAINT_AMASK = 0xff000000;
+#define TPAINT_AMASK 0xff000000
 #else
-TPAINT_AMASK = 0x000000ff;
+#define TPAINT_AMASK 0x000000ff
 #endif
 
 static unsigned draw_colors(unsigned action);
@@ -488,6 +487,12 @@ enum
   LABEL_OFF,
   LABEL_LABEL,
   LABEL_SELECT
+};
+
+enum
+{
+  SELECT_OFF,
+  SELECT_ON
 };
 
 /* Color globals (copied from colors.h, if no colors specified by user) */
@@ -887,6 +892,29 @@ static int starter_mirrored, starter_flipped, starter_personal;
 static Uint8 canvas_color_r, canvas_color_g, canvas_color_b;
 Uint8 * touched;
 
+/* Text label tool struct to hold information about text on the label layer */
+typedef struct label_node {
+	unsigned int save_texttool_len;
+	wchar_t save_texttool_str[256];
+	unsigned save_color;
+	int save_width;
+	int save_height;
+	Uint16 save_x;
+	Uint16 save_y;
+	int save_cur_font;
+        int save_text_state;
+        unsigned save_text_size;
+	struct label_node* next_label_node;	
+} label_node;
+
+static struct label_node* head;
+static struct label_node* current_select_node;
+static struct label_node* old_select_node;
+
+void add_label_node(struct label_node**, int, int, Uint16, Uint16);
+void edit_label_node(int, int, Uint16, Uint16);
+int search_label_list(struct label_node*, Uint16, Uint16);
+
 
 /* Magic tools API and tool handles: */
 
@@ -970,6 +998,7 @@ enum
 static SDL_Surface *undo_bufs[NUM_UNDO_BUFS];
 static int undo_starters[NUM_UNDO_BUFS];
 static int cur_undo, oldest_undo, newest_undo;
+static int type_undo_buf[NUM_UNDO_BUFS];
 
 static SDL_Surface *img_title, *img_title_credits, *img_title_tuxpaint;
 static SDL_Surface *img_btn_up, *img_btn_down, *img_btn_off;
@@ -1320,7 +1349,7 @@ static int cur_tool, cur_brush;
 static int cur_stamp[MAX_STAMP_GROUPS];
 static int cur_shape, cur_magic;
 static int cur_font, cur_eraser;
-static int cur_label;
+static int cur_label, cur_select;
 static int cursor_left, cursor_x, cursor_y, cursor_textwidth;	// canvas-relative
 static int been_saved;
 static char file_id[32];
@@ -1765,6 +1794,7 @@ int main(int argc, char *argv[])
   cur_font = 0;
   cur_eraser = 0;
   cur_label = 0;
+  cur_select = 0;
   cursor_left = -1;
   cursor_x = -1;
   cursor_y = -1;
@@ -1913,8 +1943,9 @@ static void mainloop(void)
   Uint16 key_unicode;
   SDLMod mod;
   Uint32 last_cursor_blink, cur_cursor_blink,
-    pre_event_time, current_event_time;
+  pre_event_time, current_event_time;
   SDL_Rect update_rect;
+  head = NULL;
 
 
   num_things = num_brushes;
@@ -2167,149 +2198,156 @@ static void mainloop(void)
 	else
 	{
 	  /* Handle key in text tool: */
-
-	  if (cur_tool == TOOL_TEXT && cursor_x != -1 && cursor_y != -1)
-	  {
-	    static int redraw = 0;
-	    wchar_t* im_cp = im_data.s;
-
-	    key_down = key;
-	    key_unicode = event.key.keysym.unicode;
-
+          if( cur_select == SELECT_OFF && cur_label == LABEL_SELECT && cur_tool == TOOL_TEXT)
+          {
+            /*Select tool has been selected but no text has been selected to edit*/
+          }
+          else
+          {
+	    if (cur_tool == TOOL_TEXT && cursor_x != -1 && cursor_y != -1)
+	    {
+  
+	      static int redraw = 0;
+	      wchar_t* im_cp = im_data.s;
+  
+	      key_down = key;
+	      key_unicode = event.key.keysym.unicode;
+  
 #ifdef DEBUG
-	    printf(
-	      "character 0x%04x %d <%c> is %d pixels, %sprintable, key_down 0x%x\n",
-	      (unsigned)event.key.keysym.unicode,
-	      (int)event.key.keysym.unicode,
-	      (key_unicode>' ' && key_unicode<127)?(char)event.key.keysym.unicode:' ',
-              (int)charsize(event.key.keysym.unicode),
-              iswprint(key_unicode)?"":"not ",
-              (unsigned)key_down
-            );
+	      printf(
+		"character 0x%04x %d <%c> is %d pixels, %sprintable, key_down 0x%x\n",
+		(unsigned)event.key.keysym.unicode,
+		(int)event.key.keysym.unicode,
+		(key_unicode>' ' && key_unicode<127)?(char)event.key.keysym.unicode:' ',
+		(int)charsize(event.key.keysym.unicode),
+		iswprint(key_unicode)?"":"not ",
+		(unsigned)key_down
+	      );
 #if 0
-            // this doesn't work for some reason
-	    wprintf(
-	      L"character 0x%04x %d <%lc> is %d pixels, %lsprintable, key_down 0x%x\n",
-	      event.key.keysym.unicode,
-	      event.key.keysym.unicode,
-	      (key_unicode>L' ')?event.key.keysym.unicode:L' ',
-              charsize(event.key.keysym.unicode),
-              iswprint(key_unicode)?L"":L"not ",
-              key_down
-            );
+	      // this doesn't work for some reason
+	      wprintf(
+		L"character 0x%04x %d <%lc> is %d pixels, %lsprintable, key_down 0x%x\n",
+		event.key.keysym.unicode,
+		event.key.keysym.unicode,
+		(key_unicode>L' ')?event.key.keysym.unicode:L' ',
+		charsize(event.key.keysym.unicode),
+		iswprint(key_unicode)?L"":L"not ",
+		key_down
+	      );
 #endif
 #endif
-
-	    /* Discard previous # of redraw characters */
-	    if((int)texttool_len <= redraw) texttool_len = 0;
-	    else texttool_len -= redraw;
-	    texttool_str[texttool_len] = L'\0';
-
-	    /* Read IM, remember how many to redraw next iteration */
-	    redraw = im_read(&im_data, event.key.keysym);
-
-	    /* Queue each character to be displayed */
-	    while(*im_cp) {
-	      if (*im_cp == L'\b')
-	      {
-	        hide_blinking_cursor();
-	        if (texttool_len > 0)
-	        {
-	          texttool_len--;
-	          texttool_str[texttool_len] = 0;
-	          playsound(screen, 0, SND_KEYCLICK, 0, SNDPOS_CENTER,
-	          	  SNDDIST_NEAR);
-
-	          do_render_cur_text(0);
-	        }
-	      }
-	      else if (*im_cp == L'\r')
-	      {
-	        int font_height;
-
-	        hide_blinking_cursor();
-	        if (texttool_len > 0)
-	        {
-	          rec_undo_buffer();
-	          do_render_cur_text(1);
-	          texttool_len = 0;
-	          cursor_textwidth = 0;
-	        }
-	        font_height = TuxPaint_Font_FontHeight(getfonthandle(cur_font));
-
-	        cursor_x = cursor_left;
-	        cursor_y = min(cursor_y + font_height, canvas->h - font_height);
-
-	        playsound(screen, 0, SND_RETURN, 1, SNDPOS_RIGHT, SNDDIST_NEAR);
+  
+	      /* Discard previous # of redraw characters */
+	      if((int)texttool_len <= redraw) texttool_len = 0;
+	      else texttool_len -= redraw;
+	      texttool_str[texttool_len] = L'\0';
+  
+	      /* Read IM, remember how many to redraw next iteration */
+	      redraw = im_read(&im_data, event.key.keysym);
+  
+	      /* Queue each character to be displayed */
+	      while(*im_cp) {
+		if (*im_cp == L'\b')
+		{
+		  hide_blinking_cursor();
+		  if (texttool_len > 0)
+		  {
+		    texttool_len--;
+		    texttool_str[texttool_len] = 0;
+		    playsound(screen, 0, SND_KEYCLICK, 0, SNDPOS_CENTER,
+			    SNDDIST_NEAR);
+  
+		    do_render_cur_text(0);
+		  }
+		}
+		else if (*im_cp == L'\r')
+		{
+		  int font_height;
+  
+		  hide_blinking_cursor();
+		  if (texttool_len > 0)
+		  {
+		    rec_undo_buffer();
+		    do_render_cur_text(1);
+		    texttool_len = 0;
+		    cursor_textwidth = 0;
+		  }
+		  font_height = TuxPaint_Font_FontHeight(getfonthandle(cur_font));
+  
+		  cursor_x = cursor_left;
+		  cursor_y = min(cursor_y + font_height, canvas->h - font_height);
+  
+		  playsound(screen, 0, SND_RETURN, 1, SNDPOS_RIGHT, SNDDIST_NEAR);
 #ifdef SPEECH
 #ifdef __APPLE__
-            if (use_sound)
-              speak_string(texttool_str);
+	      if (use_sound)
+		speak_string(texttool_str);
 #endif
 #endif
-		im_softreset(&im_data);
-	      }
-	      else if (*im_cp == L'\t')
-	      {
-	        if (texttool_len > 0)
-	        {
-	          rec_undo_buffer();
-	          do_render_cur_text(1);
-	          cursor_x = min(cursor_x + cursor_textwidth, canvas->w);
-	          texttool_len = 0;
-	          cursor_textwidth = 0;
-	        }
+		  im_softreset(&im_data);
+		}
+		else if (*im_cp == L'\t')
+		{
+		  if (texttool_len > 0)
+		  {
+		    rec_undo_buffer();
+		    do_render_cur_text(1);
+		    cursor_x = min(cursor_x + cursor_textwidth, canvas->w);
+		    texttool_len = 0;
+		    cursor_textwidth = 0;
+		  }
 #ifdef SPEECH
 #ifdef __APPLE__
-            if (use_sound)
-              speak_string(texttool_str);
+	      if (use_sound)
+		speak_string(texttool_str);
 #endif
 #endif
-		im_softreset(&im_data);
-	      }
-	      else if (iswprint(*im_cp))
-	      {
-	        if (texttool_len < (sizeof(texttool_str) / sizeof(wchar_t)) - 1)
-	        {
-	          int old_cursor_textwidth = cursor_textwidth;
+		  im_softreset(&im_data);
+		}
+		else if (iswprint(*im_cp))
+		{
+		  if (texttool_len < (sizeof(texttool_str) / sizeof(wchar_t)) - 1)
+		  {
+		    int old_cursor_textwidth = cursor_textwidth;
 #ifdef DEBUG  
-	          wprintf(L"    key = <%c>\nunicode = <%lc> 0x%04x %d\n\n",
-	          	key_down, key_unicode, key_unicode, key_unicode);
+		    wprintf(L"    key = <%c>\nunicode = <%lc> 0x%04x %d\n\n",
+			  key_down, key_unicode, key_unicode, key_unicode);
 #endif
-
-	          texttool_str[texttool_len++] = *im_cp;
-	          texttool_str[texttool_len] = 0;
-
-	          do_render_cur_text(0);
-
-
-	          if (cursor_x + old_cursor_textwidth <= canvas->w - 50 &&
-	              cursor_x + cursor_textwidth > canvas->w - 50)
-	          {
-	            playsound(screen, 0, SND_KEYCLICKRING, 1, SNDPOS_RIGHT,
-	          	    SNDDIST_NEAR);
-	          }
-	          else
-	          {
-	            /* FIXME: Might be fun to position the
-	               sound based on keyboard layout...? */
-
-	            playsound(screen, 0, SND_KEYCLICK, 0, SNDPOS_CENTER,
-	          	    SNDDIST_NEAR);
-	          }
-	        }
+		    texttool_str[texttool_len++] = *im_cp;
+		    texttool_str[texttool_len] = 0;
+  
+		    do_render_cur_text(0);
+  
+  
+		    if (cursor_x + old_cursor_textwidth <= canvas->w - 50 &&
+			cursor_x + cursor_textwidth > canvas->w - 50)
+		    {
+		      playsound(screen, 0, SND_KEYCLICKRING, 1, SNDPOS_RIGHT,
+			      SNDDIST_NEAR);
+		    }
+		    else
+		    {
+		      /* FIXME: Might be fun to position the
+			sound based on keyboard layout...? */
+  
+		      playsound(screen, 0, SND_KEYCLICK, 0, SNDPOS_CENTER,
+			      SNDDIST_NEAR);
+		    }
+		  }
+		}
+  
+		im_cp++;
+	      } /* while(*im_cp) */
+  
+	      /* Show IM tip text */
+	      if(im_data.tip_text) {
+		draw_tux_text(TUX_DEFAULT, im_data.tip_text, 1);
 	      }
-
-	      im_cp++;
-	    } /* while(*im_cp) */
-
-	    /* Show IM tip text */
-	    if(im_data.tip_text) {
-	      draw_tux_text(TUX_DEFAULT, im_data.tip_text, 1);
+  
 	    }
 
-	  }
-	}
+          }
+        }
       }
       else if (event.type == SDL_MOUSEBUTTONDOWN &&
 	       event.button.button >= 2 &&
@@ -2663,6 +2701,7 @@ static void mainloop(void)
 	    SDL_Rect r_notcontrols;
 	    SDL_Rect r_items;	// = r_notcontrols;
 	    int toolopt_changed;
+            int select_changed = 0;
 
 	    grid_dims gd_controls = { 0, 0 };	// might become 2-by-2
 	    grid_dims gd_items = { 2, 2 };	// generally becoming 2-by-whatever
@@ -2685,15 +2724,15 @@ static void mainloop(void)
 	    {
            if(!disable_label)
            {
-	       if (!disable_stamp_controls)
-		    gd_controls = (grid_dims) { 3 , 2 };
-            else
-              gd_controls = (grid_dims) { 1 , 2};
+	     if (!disable_stamp_controls)
+               gd_controls = (grid_dims) { 3 , 2 };
+             else
+               gd_controls = (grid_dims) { 1 , 2};
            }
            else
             {
               if (!disable_stamp_controls)
-		      gd_controls = (grid_dims) { 2 , 2 };
+		      			gd_controls = (grid_dims) { 2 , 2 };
             }
 	    }
 
@@ -2936,6 +2975,14 @@ static void mainloop(void)
                   if (cur_label == LABEL_SELECT)
                   {
                     cur_label = LABEL_OFF;
+                    if(cur_select == SELECT_ON)
+                    {
+                      select_changed = 1;
+                    }
+                    else
+                    {
+                      select_changed = 0;
+                    }
                   }
                   else
                   {
@@ -2951,6 +2998,14 @@ static void mainloop(void)
                   }
                   else
                   {
+                    if(cur_label == LABEL_SELECT && cur_select == SELECT_ON)
+                    {
+                      select_changed = 1;
+                    }
+                    else
+                    {
+                      select_changed = 0;
+                    }
                     cur_label = LABEL_LABEL;
                   }
                 }
@@ -3139,11 +3194,19 @@ static void mainloop(void)
 
 
 	      // Only rerender when picking a different font
-	      if (toolopt_changed)
-           {
+	     if (toolopt_changed)
+             {
               draw_fonts();
-              do_render_cur_text(0);
-           }
+              if(select_changed)
+              {
+                do_render_cur_text(1);
+                texttool_len = 0;
+              }
+              else
+              {
+                do_render_cur_text(0);
+              }
+             }
 	    }
 	    else if (cur_tool == TOOL_STAMP)
 	    {
@@ -3455,6 +3518,35 @@ static void mainloop(void)
 	  {
 	    /* Text Tool! */
 
+            if(cur_label == LABEL_SELECT)
+            {
+              if(cur_select == SELECT_OFF)
+              {
+                if(search_label_list(head, old_x, old_y))
+                {
+                  cur_select = SELECT_ON;
+                  unsigned int i = 0;
+
+                  texttool_len = current_select_node->save_texttool_len;
+                  while(i < texttool_len)
+                  {
+                    texttool_str[i] = current_select_node->save_texttool_str[i];
+                    i = i+1;
+                  }
+                  texttool_str[i] = L'\0';
+                  cur_color = current_select_node->save_color;
+                  old_x = current_select_node->save_x;
+                  old_y = current_select_node->save_y;
+                  cur_font = current_select_node->save_cur_font;
+                  text_state = current_select_node->save_text_state;
+                  text_size = current_select_node->save_text_size;
+
+                  do_render_cur_text(0);
+                  draw_colors(COLORSEL_REFRESH);
+                  draw_fonts();
+                }
+              }
+            }
 	    if (cursor_x != -1 && cursor_y != -1)
 	    {
 	      /*
@@ -3541,8 +3633,8 @@ static void mainloop(void)
 	     {
             if(!disable_label)
             {
-	         if (!disable_stamp_controls)
-		      gd_controls = (grid_dims) { 3 , 2 };
+	         		if (!disable_stamp_controls)
+		      			gd_controls = (grid_dims) { 3 , 2 };
               else
                 gd_controls = (grid_dims) { 1 , 2};
             }
@@ -3598,7 +3690,7 @@ static void mainloop(void)
 	      playsound(screen, 1, SND_SCROLL, 1, SNDPOS_RIGHT, SNDDIST_NEAR);
 	      if (*thing_scroll == 0)
 	      {
-		do_setcursor(cursor_arrow);
+					do_setcursor(cursor_arrow);
 	      }
 	    }
 	  }
@@ -3910,9 +4002,9 @@ static void mainloop(void)
 	      /* Down button; is it available? */
 
 	      if (*thing_scroll < num_things - (max - 2))
-		do_setcursor(cursor_down);
+					do_setcursor(cursor_down);
 	      else
-		do_setcursor(cursor_arrow);
+					do_setcursor(cursor_arrow);
 	    }
 	    else
 	    {
@@ -3959,8 +4051,8 @@ static void mainloop(void)
 	  }
 	  else if (cur_tool == TOOL_TEXT &&  cur_label != LABEL_SELECT)
 	    do_setcursor(cursor_insertion);
-    else if (cur_tool == TOOL_TEXT && cur_label == LABEL_SELECT)
-         do_setcursor(cursor_arrow);
+          else if (cur_tool == TOOL_TEXT && cur_label == LABEL_SELECT)
+            do_setcursor(cursor_arrow);
 	  else if (cur_tool == TOOL_MAGIC)
 	    do_setcursor(cursor_wand);
 	  else if (cur_tool == TOOL_ERASER)
@@ -4908,16 +5000,21 @@ static void stamp_draw(int x, int y)
 }
 
 
-/* Store canvas into undo buffer: */
+/* Store canvas or label into undo buffer: */
 
 static void rec_undo_buffer(void)
 {
   int wanna_update_toolbar;
 
   wanna_update_toolbar = 0;
-
-
-  SDL_BlitSurface(canvas, NULL, undo_bufs[cur_undo], NULL);
+  if(cur_tool == TOOL_TEXT && cur_label != LABEL_OFF)
+  {
+    
+  }
+  else
+  {
+    SDL_BlitSurface(canvas, NULL, undo_bufs[cur_undo], NULL);
+  }
   undo_starters[cur_undo] = UNDO_STARTER_NONE;
 
   cur_undo = (cur_undo + 1) % NUM_UNDO_BUFS;
@@ -6274,7 +6371,11 @@ static void setup(int argc, char *argv[])
   no_system_fonts = 1;
   mirrorstamps = 0;
   disable_stamp_controls = 0;
-  disable_label = 0;
+  if(VIDEO_BPP != 32)
+    disable_label = 1;
+  else
+    disable_label = 0;
+
 
 #ifndef WINDOW_WIDTH
   WINDOW_WIDTH = 800;
@@ -7556,7 +7657,7 @@ static void setup(int argc, char *argv[])
 				screen->format->Gmask,
 				screen->format->Bmask, TPAINT_AMASK);
 
-	/* making the label layer transparent */
+  /* making the label layer transparent */
   SDL_FillRect(label, NULL, SDL_MapRGBA(label->format, 0, 0, 0, 0));
 
   /* Create undo buffer space: */
@@ -12653,6 +12754,15 @@ static int do_save(int tool, int dont_show_success_results)
 
   show_progress_bar(screen);
 
+  /* Make sure we have a ~/.tuxpaint/saved/.label/ directory: */
+
+  if (!make_directory("saved/.label", "Can't create label information directory"))
+  {
+    fprintf(stderr, "Cannot save label information! SORRY!\n\n");
+    draw_tux_text(TUX_OOPS, SDL_GetError(), 0);
+    return 0;
+  }
+
 
   /* Save the file: */
 
@@ -15434,6 +15544,7 @@ static void do_render_cur_text(int do_blit)
   SDL_Rect dest, src;
   wchar_t *str;
   Uint32 colorkey;
+  Uint8 rect_red, rect_green, rect_blue;
 
   hide_blinking_cursor();
 
@@ -15473,15 +15584,22 @@ static void do_render_cur_text(int do_blit)
                                     tmp_surf->format->BitsPerPixel,
                                     tmp_surf->format->Rmask, tmp_surf->format->Gmask, tmp_surf->format->Bmask, 0);
 
-  if((color_hexes[cur_color][0] +
-       color_hexes[cur_color][1] + color_hexes[cur_color][2]) == 765)
-  {
-    SDL_FillRect(tmp_label, NULL, SDL_MapRGB(tmp_label->format, 0, 0, 0));
-  }
+  if(color_hexes[cur_color][0] < 123)
+    rect_red = color_hexes[cur_color][0]+5;
   else
-  {
-    SDL_FillRect(tmp_label, NULL, SDL_MapRGB(tmp_label->format, 255, 255, 255));
-  }
+    rect_red = color_hexes[cur_color][0]-5;	
+
+  if(color_hexes[cur_color][1] < 123)
+    rect_green = color_hexes[cur_color][1]+5;
+  else
+    rect_green = color_hexes[cur_color][1]-5;
+
+  if(color_hexes[cur_color][2] < 123)
+    rect_blue = color_hexes[cur_color][2]+5;
+  else
+    rect_blue = color_hexes[cur_color][2]-5;
+
+  SDL_FillRect(tmp_label, NULL, SDL_MapRGB(tmp_label->format, rect_red, rect_green, rect_blue));
 
 
   if (!do_blit)
@@ -15503,7 +15621,7 @@ static void do_render_cur_text(int do_blit)
     if (dest.y + dest.h > (48 * 7 + 40 + HEIGHTOFFSET))
       dest.h = (48 * 7 + 40 + HEIGHTOFFSET) - dest.y;
 
-    SDL_FillRect(screen, &dest, SDL_MapRGB(canvas->format, 255, 255, 255));
+    SDL_FillRect(screen, &dest, SDL_MapRGB(canvas->format, 0, 0, 0));
 
 
     /* FIXME: This would be nice if it were alpha-blended: */
@@ -15553,20 +15671,23 @@ static void do_render_cur_text(int do_blit)
 
     if (do_blit)
     {
-      if(cur_label == LABEL_LABEL)
+
+      if(cur_select == SELECT_ON)
       {
         SDL_BlitSurface(tmp_surf, &src, tmp_label, &src);
-        if((color_hexes[cur_color][0] +
-             color_hexes[cur_color][1] + color_hexes[cur_color][2]) == 765)
-        {
-          colorkey = SDL_MapRGB(tmp_label->format, 0, 0, 0);
-        }
-        else
-        {
-          colorkey = SDL_MapRGB(tmp_label->format, 255, 255, 255);
-        }
+        colorkey = SDL_MapRGB(tmp_label->format, rect_red, rect_green, rect_blue);
         SDL_SetColorKey(tmp_label, SDL_SRCCOLORKEY, colorkey);
         SDL_BlitSurface(tmp_label, &src, label, &dest);
+        edit_label_node(src.w, src.h, dest.x, dest.y);
+        cur_select = SELECT_OFF;
+      }
+      else if(cur_label == LABEL_LABEL)
+      {
+        SDL_BlitSurface(tmp_surf, &src, tmp_label, &src);
+        colorkey = SDL_MapRGB(tmp_label->format, rect_red, rect_green, rect_blue);
+        SDL_SetColorKey(tmp_label, SDL_SRCCOLORKEY, colorkey);
+        SDL_BlitSurface(tmp_label, &src, label, &dest);
+	add_label_node(&head, src.w, src.h, dest.x, dest.y);
       }
       else
       {
@@ -18999,4 +19120,85 @@ Uint32 magic_getpixel(SDL_Surface * surface, int x, int y)
   return(getpixels[surface->format->BytesPerPixel](surface, x, y));
 }
 
+void add_label_node(struct label_node** ref_head, int w, int h, Uint16 x, Uint16 y)
+{
+  struct label_node* new_node = malloc(sizeof(struct label_node));
+  unsigned int i = 0;
+	
+  new_node->save_texttool_len = texttool_len;
+  while(i < texttool_len)
+  {
+    new_node->save_texttool_str[i] = texttool_str[i];
+    i = i+1;
+  }
+  new_node->save_color = cur_color;
+  new_node->save_width = w;
+  new_node->save_height = h;
+  new_node->save_x = x;
+  new_node->save_y = y;
+  new_node->save_cur_font = cur_font;
+  new_node->save_text_state = text_state;
+  new_node->save_text_size = text_size;
 
+  new_node->next_label_node = *ref_head;
+  *ref_head = new_node;
+}
+
+void edit_label_node(int w, int h, Uint16 x, Uint16 y)
+{
+  unsigned int i = 0;
+  if(texttool_len == 0)
+  {
+    old_select_node->next_label_node = current_select_node->next_label_node;
+  }
+  else
+  {
+    current_select_node->save_texttool_len = texttool_len;
+    while(i < texttool_len)
+    {
+      current_select_node->save_texttool_str[i] = texttool_str[i];
+      i = i+1;
+    }
+    current_select_node->save_color =  cur_color;
+    current_select_node->save_width = w;
+    current_select_node->save_height = h;
+    current_select_node->save_x = x;
+    current_select_node->save_y = y;
+    current_select_node->save_cur_font = cur_font;
+    current_select_node->save_text_state = text_state;
+    current_select_node->save_text_size = text_size;
+  }
+
+}
+
+int search_label_list(struct label_node* head, Uint16 x, Uint16 y)
+{
+  struct label_node* current_node;
+  SDL_Rect r_tmp_select;
+  current_node =  head;
+  while(current_node != NULL)
+  {
+    if(x >= current_node->save_x)
+    {
+      if(y >= current_node->save_y)
+      {
+        if(x <= (current_node->save_x)+(current_node->save_width))
+        {
+          if(y <= (current_node->save_y)+(current_node->save_height))
+          {
+            current_select_node = current_node;
+            r_tmp_select.w = current_select_node->save_width;
+            r_tmp_select.h = current_select_node->save_height;
+            r_tmp_select.x = current_select_node->save_x;
+            r_tmp_select.y = current_select_node->save_y;
+            SDL_FillRect(label, &r_tmp_select, SDL_MapRGBA(label->format, 0, 0, 0, 0));
+            return 1;
+          }
+        }
+      }
+    }
+    old_select_node = current_node; 
+    current_node = current_node->next_label_node;
+  }
+  return 0;
+}
