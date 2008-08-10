@@ -714,6 +714,7 @@ static void setup_screen_layout(void)
 static SDL_Surface *screen;
 static SDL_Surface *canvas;
 static SDL_Surface *label;
+static SDL_Surface *save_canvas;
 static SDL_Surface *img_starter, *img_starter_bkgd;
 
 /* Update a rect. based on two x/y coords (not necessarly in order): */
@@ -908,12 +909,23 @@ typedef struct label_node {
 } label_node;
 
 static struct label_node* head;
-static struct label_node* current_select_node;
-static struct label_node* old_select_node;
+static struct label_node* undo_head;
+static struct label_node* redo_head;
+
+static unsigned int select_texttool_len;
+static wchar_t select_texttool_str[256];
+static unsigned select_color;
+static int select_width;
+static int select_height;
+static Uint16 select_x;
+static Uint16 select_y;
+static int select_cur_font;
+static int select_text_state;
+static unsigned select_text_size;
 
 void add_label_node(struct label_node**, int, int, Uint16, Uint16);
-void edit_label_node(int, int, Uint16, Uint16);
-int search_label_list(struct label_node*, Uint16, Uint16);
+int search_label_list(struct label_node**, Uint16, Uint16);
+void move_node(struct label_node**, struct label_node**);
 
 
 /* Magic tools API and tool handles: */
@@ -998,7 +1010,6 @@ enum
 static SDL_Surface *undo_bufs[NUM_UNDO_BUFS];
 static int undo_starters[NUM_UNDO_BUFS];
 static int cur_undo, oldest_undo, newest_undo;
-static int type_undo_buf[NUM_UNDO_BUFS];
 
 static SDL_Surface *img_title, *img_title_credits, *img_title_tuxpaint;
 static SDL_Surface *img_btn_up, *img_btn_down, *img_btn_off;
@@ -1946,6 +1957,8 @@ static void mainloop(void)
   pre_event_time, current_event_time;
   SDL_Rect update_rect;
   head = NULL;
+  undo_head = NULL;
+  redo_head = NULL;
 
 
   num_things = num_brushes;
@@ -3522,24 +3535,24 @@ static void mainloop(void)
             {
               if(cur_select == SELECT_OFF)
               {
-                if(search_label_list(head, old_x, old_y))
+                if(search_label_list(&head, old_x, old_y))
                 {
                   cur_select = SELECT_ON;
                   unsigned int i = 0;
 
-                  texttool_len = current_select_node->save_texttool_len;
+                  texttool_len = select_texttool_len;
                   while(i < texttool_len)
                   {
-                    texttool_str[i] = current_select_node->save_texttool_str[i];
+                    texttool_str[i] = select_texttool_str[i];
                     i = i+1;
                   }
                   texttool_str[i] = L'\0';
-                  cur_color = current_select_node->save_color;
-                  old_x = current_select_node->save_x;
-                  old_y = current_select_node->save_y;
-                  cur_font = current_select_node->save_cur_font;
-                  text_state = current_select_node->save_text_state;
-                  text_size = current_select_node->save_text_size;
+                  cur_color = select_color;
+                  old_x = select_x;
+                  old_y = select_y;
+                  cur_font = select_cur_font;
+                  text_state = select_text_state;
+                  text_size = select_text_size;
 
                   do_render_cur_text(0);
                   draw_colors(COLORSEL_REFRESH);
@@ -7615,6 +7628,15 @@ static void setup(int argc, char *argv[])
 				screen->format->Rmask,
 				screen->format->Gmask,
 				screen->format->Bmask, 0);
+
+    save_canvas = SDL_CreateRGBSurface(screen->flags,
+				WINDOW_WIDTH - (96 * 2),
+				(48 * 7) + 40 + HEIGHTOFFSET,
+				screen->format->BitsPerPixel,
+				screen->format->Rmask,
+				screen->format->Gmask,
+				screen->format->Bmask, 0);
+
 
   img_starter = NULL;
   img_starter_bkgd = NULL;
@@ -12666,7 +12688,11 @@ static int do_save(int tool, int dont_show_success_results)
   char tmp[1024];
   SDL_Surface *thm;
   FILE *fi;
+  struct label_node* current_node;
+  //unsigned i = 0;
 
+  SDL_BlitSurface(canvas, NULL, save_canvas, NULL);
+  SDL_BlitSurface(label, NULL, save_canvas, NULL);
 
   /* Was saving completely disabled? */
 
@@ -12783,13 +12809,69 @@ static int do_save(int tool, int dont_show_success_results)
   }
   else
   {
+    if (!do_png_save(fi, fname, save_canvas))
+    {
+      free(fname);
+      return 0;
+    }
+
+    free(fname);
+
+    snprintf(tmp, sizeof(tmp), "saved/.label/%s%s", file_id, FNAME_EXTENSION);
+    fname = get_fname(tmp, DIR_SAVE);
+    debug(fname);
+
+    fi = fopen(fname, "wb");
+
     if (!do_png_save(fi, fname, canvas))
     {
       free(fname);
       return 0;
     }
+
+
   }
 
+  free(fname);
+
+  /* saving information about text on label layer */
+
+  snprintf(tmp, sizeof(tmp), "saved/.label/%s.dat", file_id);
+  fname = get_fname(tmp, DIR_SAVE);
+
+  fi = fopen(fname, "wb");
+
+
+  current_node =  head;
+  while(current_node != NULL)
+  {
+
+    fprintf(fi, "%u\n", current_node->save_texttool_len);
+
+/*
+    i = 0;
+    while(i < current_node->save_texttool_len)
+    {
+      fwprintf(fi, "%c", current_select_node->save_texttool_str[i]);
+    }
+
+    fprintf(fi, "\n");
+*/
+
+    fprintf(fi, "%u\n", current_node->save_color);
+    fprintf(fi, "%d\n", current_node->save_width);
+    fprintf(fi, "%d\n", current_node->save_height);
+    fprintf(fi, "%u\n", current_node->save_x);
+    fprintf(fi, "%u\n", current_node->save_y);
+    fprintf(fi, "%d\n", current_node->save_cur_font);
+    fprintf(fi, "%d\n", current_node->save_text_state);
+    fprintf(fi, "%u\n", current_node->save_text_size);
+    fprintf(fi, "\n");
+
+    current_node = current_node->next_label_node;
+
+  }
+  fclose(fi);
   free(fname);
 
   show_progress_bar(screen);
@@ -12818,7 +12900,7 @@ static int do_save(int tool, int dont_show_success_results)
 
   debug(fname);
 
-  thm = thumbnail(canvas, THUMB_W - 20, THUMB_H - 20, 0);
+  thm = thumbnail(save_canvas, THUMB_W - 20, THUMB_H - 20, 0);
 
   fi = fopen(fname, "wb");
   if (fi == NULL)
@@ -12835,7 +12917,6 @@ static int do_save(int tool, int dont_show_success_results)
   SDL_FreeSurface(thm);
 
   free(fname);
-
 
   /* Write 'starter' and/or canvas color info, if it's useful to: */
 
@@ -15573,6 +15654,9 @@ static void do_render_cur_text(int do_blit)
   }
   else
   {
+
+    cur_select = SELECT_OFF;
+
     /* FIXME: Do something different! */
 
     update_canvas(0, 0, WINDOW_WIDTH - 96, (48 * 7) + 40 + HEIGHTOFFSET);
@@ -15678,7 +15762,8 @@ static void do_render_cur_text(int do_blit)
         colorkey = SDL_MapRGB(tmp_label->format, rect_red, rect_green, rect_blue);
         SDL_SetColorKey(tmp_label, SDL_SRCCOLORKEY, colorkey);
         SDL_BlitSurface(tmp_label, &src, label, &dest);
-        edit_label_node(src.w, src.h, dest.x, dest.y);
+        add_label_node(&head, src.w, src.h, dest.x, dest.y);
+        add_label_node(&undo_head, src.w, src.h, dest.x, dest.y);
         cur_select = SELECT_OFF;
       }
       else if(cur_label == LABEL_LABEL)
@@ -15687,7 +15772,8 @@ static void do_render_cur_text(int do_blit)
         colorkey = SDL_MapRGB(tmp_label->format, rect_red, rect_green, rect_blue);
         SDL_SetColorKey(tmp_label, SDL_SRCCOLORKEY, colorkey);
         SDL_BlitSurface(tmp_label, &src, label, &dest);
-	add_label_node(&head, src.w, src.h, dest.x, dest.y);
+        add_label_node(&head, src.w, src.h, dest.x, dest.y);
+        add_label_node(&undo_head, src.w, src.h, dest.x, dest.y);
       }
       else
       {
@@ -19144,38 +19230,14 @@ void add_label_node(struct label_node** ref_head, int w, int h, Uint16 x, Uint16
   *ref_head = new_node;
 }
 
-void edit_label_node(int w, int h, Uint16 x, Uint16 y)
-{
-  unsigned int i = 0;
-  if(texttool_len == 0)
-  {
-    old_select_node->next_label_node = current_select_node->next_label_node;
-  }
-  else
-  {
-    current_select_node->save_texttool_len = texttool_len;
-    while(i < texttool_len)
-    {
-      current_select_node->save_texttool_str[i] = texttool_str[i];
-      i = i+1;
-    }
-    current_select_node->save_color =  cur_color;
-    current_select_node->save_width = w;
-    current_select_node->save_height = h;
-    current_select_node->save_x = x;
-    current_select_node->save_y = y;
-    current_select_node->save_cur_font = cur_font;
-    current_select_node->save_text_state = text_state;
-    current_select_node->save_text_size = text_size;
-  }
-
-}
-
-int search_label_list(struct label_node* head, Uint16 x, Uint16 y)
+int search_label_list(struct label_node** ref_head, Uint16 x, Uint16 y)
 {
   struct label_node* current_node;
+  struct label_node* old_node = NULL;
+  struct label_node* tmp_node;
   SDL_Rect r_tmp_select;
-  current_node =  head;
+  unsigned i;
+  current_node =  *ref_head;
   while(current_node != NULL)
   {
     if(x >= current_node->save_x)
@@ -19186,19 +19248,57 @@ int search_label_list(struct label_node* head, Uint16 x, Uint16 y)
         {
           if(y <= (current_node->save_y)+(current_node->save_height))
           {
-            current_select_node = current_node;
-            r_tmp_select.w = current_select_node->save_width;
-            r_tmp_select.h = current_select_node->save_height;
-            r_tmp_select.x = current_select_node->save_x;
-            r_tmp_select.y = current_select_node->save_y;
+            select_texttool_len = current_node->save_texttool_len;
+
+            i = 0;
+            while(i < select_texttool_len)
+            {
+              select_texttool_str[i] = current_node->save_texttool_str[i];
+              i = i+1;
+            }
+
+            select_color = current_node->save_color;
+            select_width = current_node->save_width;
+            select_height = current_node->save_height;
+            select_x = current_node->save_x;
+            select_y = current_node->save_y;
+            select_cur_font = current_node->save_cur_font;
+            select_text_state = current_node->save_text_state;
+            select_text_size = current_node->save_text_size;
+
+            r_tmp_select.w = current_node->save_width;
+            r_tmp_select.h = current_node->save_height;
+            r_tmp_select.x = current_node->save_x;
+            r_tmp_select.y = current_node->save_y;
+
             SDL_FillRect(label, &r_tmp_select, SDL_MapRGBA(label->format, 0, 0, 0, 0));
+
+            if(old_node == NULL)
+            {
+              *ref_head = current_node->next_label_node;
+              free(current_node);
+            }
+            else
+            {
+              tmp_node = current_node->next_label_node;
+              free(old_node->next_label_node);
+              old_node->next_label_node = tmp_node;
+            }
             return 1;
           }
         }
       }
     }
-    old_select_node = current_node; 
+    old_node = current_node;
     current_node = current_node->next_label_node;
   }
   return 0;
+}
+
+void move_node(struct label_node** dest_ref, struct label_node** source_ref) 
+{
+   struct label_node* new_node = *source_ref;
+   *source_ref = new_node->next_label_node;
+   new_node->next_label_node = *dest_ref;
+   *dest_ref = new_node;
 }

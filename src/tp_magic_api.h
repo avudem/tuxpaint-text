@@ -3,7 +3,10 @@
 
 #include "SDL.h"
 #include "SDL_mixer.h"
-
+#include "libintl.h"
+#ifndef gettext_noop
+#define gettext_noop(String) String
+#endif
 
 /* min() and max() variable comparisons: */
 
@@ -133,6 +136,10 @@ typedef struct magic_api_t {
    and you will be active. */
 
 #define TP_MAGIC_API_VERSION 0x00000001
+
+#ifndef ATTRIBUTE_UNUSED
+#define ATTRIBUTE_UNUSED __attribute__ ((__unused__))
+#endif /* ATTRIBUTE_UNUSED */
 
 #endif
 
