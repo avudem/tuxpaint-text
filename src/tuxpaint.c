@@ -9855,12 +9855,14 @@ static void do_undo(void)
 #endif
     if(text_undo[cur_undo] == 1)
     {
+/*
       derender_node(&head, undo_head->save_textid);
       if(undo_head->save_replaceid != 0)
       {
         render_node(&total_head, &head, undo_head->save_replaceid);
       }
-//      move_node(&undo_head,&redo_head);
+      move_node(&redo_head,&undo_head);
+*/
     }
     else
     {
@@ -9939,12 +9941,14 @@ static void do_redo(void)
 #endif
     if(text_undo[cur_undo] == 1)
     {
+/*
       if(undo_head->save_replaceid != 0)
       {
-        derender_node(&head, undo_head->save_replaceid);
+        derender_node(&head, redo_head->save_replaceid);
       }
-      render_node(&total_head, &head, undo_head->save_textid);
-//      move_node(&redo_head,&undo_head);
+      render_node(&total_head, &head, redo_head->save_textid);
+      move_node(&undo_head,&redo_head);
+*/
     }
     else
     {
@@ -12736,7 +12740,7 @@ static int do_save(int tool, int dont_show_success_results)
   SDL_Surface *thm;
   FILE *fi;
   struct label_node* current_node;
-  //unsigned i = 0;
+  unsigned i = 0;
 
   SDL_BlitSurface(canvas, NULL, save_canvas, NULL);
   SDL_BlitSurface(label, NULL, save_canvas, NULL);
@@ -12895,15 +12899,15 @@ static int do_save(int tool, int dont_show_success_results)
 
     fprintf(fi, "%u\n", current_node->save_texttool_len);
 
-/*
-    i = 0;
-    while(i < current_node->save_texttool_len)
+
+
+    for(i=0; i < current_node->save_texttool_len; i++)
     {
-      fwprintf(fi, "%c", current_select_node->save_texttool_str[i]);
+      fprintf(fi, "%c", current_node->save_texttool_str[i]);
     }
 
     fprintf(fi, "\n");
-*/
+
 
     fprintf(fi, "%u\n", current_node->save_color);
     fprintf(fi, "%d\n", current_node->save_width);
@@ -19356,10 +19360,17 @@ int search_label_list(struct label_node** ref_head, Uint16 x, Uint16 y)
 
 void move_node(struct undo_label_node** dest_ref, struct undo_label_node** source_ref) 
 {
-   struct undo_label_node* new_node = *source_ref;
-   *source_ref = new_node->next_undo_node;
-   new_node->next_undo_node = *dest_ref;
-   *dest_ref = new_node;
+  struct undo_label_node* dest_node = malloc(sizeof(struct undo_label_node));
+  struct undo_label_node* src_node = *source_ref;
+
+  dest_node->save_textid = src_node->save_textid;
+  dest_node->save_replaceid = src_node->save_replaceid;
+
+  dest_node->next_undo_node = *dest_ref;
+  *dest_ref = dest_node;
+
+  *source_ref = src_node->next_undo_node;
+  free(src_node);
 }
 
 void add_undo_node(struct undo_label_node** ref_head)
@@ -19504,10 +19515,8 @@ void render_node(struct label_node** all_head, struct label_node** ref_head, int
       return;
 
     }
-    else
-    {
-      node_ptr = node_ptr->next_label_node;
-    }
+
+    node_ptr = node_ptr->next_label_node;
   }
 
 }
