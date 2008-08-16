@@ -946,6 +946,9 @@ void move_node(struct undo_label_node**, struct undo_label_node**);
 void render_node(struct label_node**, struct label_node**, int);
 void derender_node(struct label_node**, int);
 
+void delete_label_list(struct label_node**);
+void delete_undo_list(struct undo_label_node**);
+
 
 /* Magic tools API and tool handles: */
 
@@ -18736,6 +18739,19 @@ int do_new_dialog(void)
     }
   }
 
+  /* Clear label surface */
+
+  SDL_FillRect(label, NULL, SDL_MapRGBA(label->format, 0, 0, 0, 0));
+
+  /* Clear all info related to label surface */
+  textid = 1;
+  replaceid = 0;
+
+  delete_label_list(&head);
+  delete_label_list(&total_head);
+  delete_undo_list(&undo_head);
+  delete_undo_list(&redo_head);
+
   update_canvas(0, 0, WINDOW_WIDTH - 96 - 96, 48 * 7 + 40 + HEIGHTOFFSET);
 
 
@@ -19561,4 +19577,34 @@ void derender_node(struct label_node** ref_head, int id)
     current_node = current_node->next_label_node;
   }
 
+}
+
+void delete_label_list(struct label_node** ref_head)
+{
+  struct label_node* current = *ref_head;
+  struct label_node* next;
+
+  while(current != NULL)
+  {
+    next = current->next_label_node;
+    free(current);
+    current = next;
+  }
+
+  *ref_head = NULL;
+}
+
+void delete_undo_list(struct undo_label_node** ref_head)
+{
+  struct undo_label_node* current = *ref_head;
+  struct undo_label_node* next;
+
+  while(current != NULL)
+  {
+    next = current->next_undo_node;
+    free(current);
+    current = next;
+  }
+
+  *ref_head = NULL;
 }
