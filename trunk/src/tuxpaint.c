@@ -3580,6 +3580,20 @@ static void mainloop(void)
                   text_state = select_text_state;
                   text_size = select_text_size;
 
+                  int j;
+		  for (j = 0; j < num_font_families; j++)
+		  {
+		    if (user_font_families[j]
+		        && user_font_families[j]->handle)
+		    {
+		      TuxPaint_Font_CloseFont(user_font_families[j]->handle);
+		      user_font_families[j]->handle = NULL;
+		    }
+		  }
+		  draw_fonts();
+		  update_screen_rect(&r_toolopt);
+
+
                   do_render_cur_text(0);
                   draw_colors(COLORSEL_REFRESH);
                   draw_fonts();
@@ -18629,6 +18643,19 @@ int do_new_dialog(void)
       }
     }
 
+    /* Clear label surface */
+
+    SDL_FillRect(label, NULL, SDL_MapRGBA(label->format, 0, 0, 0, 0));
+
+    /* Clear all info related to label surface */
+    textid = 1;
+    replaceid = 0;
+
+    delete_label_list(&head);
+    delete_label_list(&total_head);
+    delete_undo_list(&undo_head);
+    delete_undo_list(&redo_head);
+
 
     if (which >= first_starter)
     {
@@ -18738,19 +18765,6 @@ int do_new_dialog(void)
       playsound(screen, 1, SND_HARP, 1, SNDPOS_CENTER, SNDDIST_NEAR);
     }
   }
-
-  /* Clear label surface */
-
-  SDL_FillRect(label, NULL, SDL_MapRGBA(label->format, 0, 0, 0, 0));
-
-  /* Clear all info related to label surface */
-  textid = 1;
-  replaceid = 0;
-
-  delete_label_list(&head);
-  delete_label_list(&total_head);
-  delete_undo_list(&undo_head);
-  delete_undo_list(&redo_head);
 
   update_canvas(0, 0, WINDOW_WIDTH - 96 - 96, 48 * 7 + 40 + HEIGHTOFFSET);
 
@@ -19409,9 +19423,6 @@ void render_node(struct label_node** all_head, struct label_node** ref_head, int
 
   node_ptr = *all_head;
 
-  SDL_Color color = { color_hexes[node_ptr->save_color][0],
-    color_hexes[node_ptr->save_color][1],
-    color_hexes[node_ptr->save_color][2], 0};
   SDL_Surface *tmp_surf, *tmp_label;
   SDL_Rect dest, src;
   wchar_t *str;
@@ -19425,6 +19436,14 @@ void render_node(struct label_node** all_head, struct label_node** ref_head, int
     if(node_ptr->save_textid == id)
     {
       /* Render the text: */
+
+      SDL_Color color = { color_hexes[node_ptr->save_color][0],
+        color_hexes[node_ptr->save_color][1],
+        color_hexes[node_ptr->save_color][2], 0};
+
+      text_state = node_ptr->save_text_state;
+      text_size = node_ptr->save_text_size;
+
       i = 0;
       while(i < node_ptr->save_texttool_len)
       {
