@@ -14226,13 +14226,21 @@ int do_open(void)
             fscanf(lfi, "%d\n\n", &tmp_scale_h);
 
             int k;
+            unsigned l;
+            unsigned tmp_pos;
+            char tmp_char;
+            float old_width = tmp_scale_w;
+            float old_height = tmp_scale_h;
+            float new_width = r_canvas.w;
+            float new_height = r_canvas.h;
+            float width_ratio = new_width/old_width;
+            float height_ratio = new_height/old_height;
+            float old_pos;
+            float new_pos;
 
             for(k = 0; k < list_ctr; k++)
             {
               new_node = malloc(sizeof(struct label_node));
-              unsigned l;
-              unsigned tmp_pos;
-              char tmp_char;
 
               fscanf(lfi , "%u\n", &new_node->save_texttool_len);
               for(l = 0; l < new_node->save_texttool_len; l++)
@@ -14245,8 +14253,14 @@ int do_open(void)
               fscanf(lfi, "%d\n", &new_node->save_width);
               fscanf(lfi, "%d\n", &new_node->save_height);
               fscanf(lfi, "%u\n", &tmp_pos);
+              old_pos = tmp_pos;
+              new_pos = old_pos * width_ratio;
+              tmp_pos = new_pos;
               new_node->save_x = tmp_pos;
               fscanf(lfi, "%u\n", &tmp_pos);
+              old_pos = tmp_pos;
+              new_pos = old_pos * height_ratio;
+              tmp_pos = new_pos;
               new_node->save_y = tmp_pos;
               fscanf(lfi, "%d\n", &new_node->save_cur_font);
               fscanf(lfi, "%d\n", &new_node->save_text_state);
@@ -14261,6 +14275,8 @@ int do_open(void)
               total_head = new_node;
 
             }
+
+            fclose(lfi);
             /* Render all the loaded nodes */
             for(k = 1; k <= list_ctr; k++)
             {
