@@ -14261,8 +14261,11 @@ int do_open(void)
               total_head = new_node;
 
             }
-
-            /* code that will render all the nodes into label surface */ 
+            /* Render all the loaded nodes */
+            for(k = 1; k <= list_ctr; k++)
+            {
+              render_node(&total_head, &head, k);
+            }
 
           }
           else
