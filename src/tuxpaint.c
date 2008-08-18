@@ -12758,6 +12758,7 @@ static int do_save(int tool, int dont_show_success_results)
   FILE *fi;
   struct label_node* current_node;
   unsigned i = 0;
+  int list_ctr = 0;
 
   SDL_BlitSurface(canvas, NULL, save_canvas, NULL);
   SDL_BlitSurface(label, NULL, save_canvas, NULL);
@@ -12909,6 +12910,16 @@ static int do_save(int tool, int dont_show_success_results)
 
   fi = fopen(fname, "wb");
 
+  current_node =  head;
+  while(current_node != NULL)
+  {
+    list_ctr = list_ctr+1;
+    current_node = current_node->next_label_node;
+  }
+
+  fprintf(fi, "%d\n", list_ctr);
+  fprintf(fi, "%d\n", r_canvas.w);
+  fprintf(fi, "%d\n\n", r_canvas.h);
 
   current_node =  head;
   while(current_node != NULL)
@@ -13241,8 +13252,8 @@ int do_open(void)
   char *rfname;
   char **d_names = NULL, **d_exts = NULL;
   int *d_places;
-  FILE *fi;
-  char fname[1024];
+  FILE *fi, *lfi;
+  char fname[1024], lfname[1024];
   int num_files, i, done, slideshow, update_list, want_erase, cur, which,
     num_files_in_dirs, j, any_saved_files;
   SDL_Rect dest;
@@ -13252,6 +13263,10 @@ int do_open(void)
   int last_click_which, last_click_button;
   int places_to_look;
   int opened_something;
+  struct label_node* new_node;
+  int list_ctr;
+  int tmp_scale_w;
+  int tmp_scale_h;
 
   opened_something = 0;
 
@@ -14181,9 +14196,80 @@ int do_open(void)
 
           /* Figure out filename: */
 
-          snprintf(fname, sizeof(fname), "%s/%s%s",
-              dirname[d_places[which]], d_names[which], d_exts[which]);
+          if(!disable_label)
+          {
+            snprintf(fname, sizeof(fname), "%s/.label/%s%s",
+                dirname[d_places[which]], d_names[which], d_exts[which]);
 
+            /* Clear label surface */
+
+            SDL_FillRect(label, NULL, SDL_MapRGBA(label->format, 0, 0, 0, 0));
+
+            /* Clear all info related to label surface */
+            textid = 1;
+            replaceid = 0;
+
+            delete_label_list(&head);
+            delete_label_list(&total_head);
+            delete_undo_list(&undo_head);
+            delete_undo_list(&redo_head);
+
+            /* Load info about the label surface */
+
+            snprintf(lfname, sizeof(lfname), "%s/.label/%s.dat",
+                      dirname[d_places[which]], d_names[which]);
+
+            lfi = fopen(lfname, "r");
+
+            fscanf(lfi, "%d\n", &list_ctr);
+            fscanf(lfi, "%d\n", &tmp_scale_w);
+            fscanf(lfi, "%d\n\n", &tmp_scale_h);
+
+            int k;
+
+            for(k = 0; k < list_ctr; k++)
+            {
+              new_node = malloc(sizeof(struct label_node));
+              unsigned l;
+              unsigned tmp_pos;
+              char tmp_char;
+
+              fscanf(lfi , "%u\n", &new_node->save_texttool_len);
+              for(l = 0; l < new_node->save_texttool_len; l++)
+              {
+                fscanf(lfi, "%c", &tmp_char);
+                new_node->save_texttool_str[l] = tmp_char;
+              }
+              fscanf(lfi, "\n");
+              fscanf(lfi, "%u\n", &new_node->save_color);
+              fscanf(lfi, "%d\n", &new_node->save_width);
+              fscanf(lfi, "%d\n", &new_node->save_height);
+              fscanf(lfi, "%u\n", &tmp_pos);
+              new_node->save_x = tmp_pos;
+              fscanf(lfi, "%u\n", &tmp_pos);
+              new_node->save_y = tmp_pos;
+              fscanf(lfi, "%d\n", &new_node->save_cur_font);
+              fscanf(lfi, "%d\n", &new_node->save_text_state);
+              fscanf(lfi, "%u\n", &new_node->save_text_size);
+
+              new_node->save_textid = textid;
+              textid = textid+1;
+
+              fscanf(lfi, "\n");
+
+              new_node->next_label_node = total_head;
+              total_head = new_node;
+
+            }
+
+            /* code that will render all the nodes into label surface */ 
+
+          }
+          else
+          {
+            snprintf(fname, sizeof(fname), "%s/%s%s",
+                dirname[d_places[which]], d_names[which], d_exts[which]);
+          }
           img = myIMG_Load(fname);
 
           if (img == NULL)
@@ -19453,6 +19539,20 @@ void render_node(struct label_node** all_head, struct label_node** ref_head, int
       tmp_str[i] = L'\0';
 
       str = uppercase_w(tmp_str);
+
+      text_state = node_ptr->save_text_state;
+      text_size = node_ptr->save_text_size;
+
+      int j;
+      for (j = 0; j < num_font_families; j++)
+      {
+        if (user_font_families[j]
+            && user_font_families[j]->handle)
+        {
+          TuxPaint_Font_CloseFont(user_font_families[j]->handle);
+          user_font_families[j]->handle = NULL;
+        }
+      }
 
       tmp_surf = render_text_w(getfonthandle(node_ptr->save_cur_font), str, color);
 
