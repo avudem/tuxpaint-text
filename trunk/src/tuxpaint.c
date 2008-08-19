@@ -1858,6 +1858,35 @@ int main(int argc, char *argv[])
 
   reset_avail_tools();
 
+  /* Load fonts */
+
+  if (!font_thread_done)
+  {
+    draw_colors(COLORSEL_DISABLE);
+    draw_none();
+    update_screen_rect(&r_toolopt);
+    update_screen_rect(&r_ttoolopt);
+    do_setcursor(cursor_watch);
+
+    // Wait while Text tool finishes loading fonts
+    draw_tux_text(TUX_WAIT, gettext("Please wait…"), 1);
+
+    waiting_for_fonts = 1;
+#ifdef FORKED_FONTS
+    receive_some_font_info(screen);
+#else
+    while (!font_thread_done && !font_thread_aborted)
+    {
+      // FIXME: should have a read-depends memory barrier around here
+      show_progress_bar(screen);
+      SDL_Delay(20);
+    }
+    // FIXME: should kill this in any case
+    SDL_WaitThread(font_thread, NULL);
+#endif
+    do_setcursor(cursor_arrow);
+  }
+
 
   /* Load current image (if any): */
 
