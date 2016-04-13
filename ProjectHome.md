@@ -1,0 +1,1 @@
+This project aims to add text manipulation support to Tuxpaint as part of GSoC. The project has been hosted here instead of the main repository for convenience of code evaluation. The project home is at http://www.tuxpaint.org
